@@ -1,0 +1,12 @@
+{
+  "name": "group-order",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Прототип «Совместной корзины» (Real-Time Group Order): WebSocket-сервер на node:sqlite без внешних зависимостей + лёгкий веб-клиент",
+  "main": "server.js",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  }
+}
