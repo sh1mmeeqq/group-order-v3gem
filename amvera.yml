@@ -1,0 +1,11 @@
+meta:
+  environment: node
+  toolchain:
+    name: npm
+    version: 22
+build:
+  skip: true
+run:
+  command: npm start
+  containerPort: 8080
+  
