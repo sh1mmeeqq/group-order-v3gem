@@ -4,6 +4,8 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
+const crypto = require('node:crypto');
 const { openDb } = require('./lib/db');
 const { Service, AppError } = require('./lib/service');
 const { Hub } = require('./lib/hub');
@@ -120,15 +122,37 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
     });
   }
 
-  function serveFile(res, file) {
-    fs.readFile(file, (err, data) => {
-      if (err) return json(res, 404, { error: 'not_found' });
-      res.writeHead(200, {
+  // Статика: файл читается и сжимается один раз (пересборка при смене mtime), клиент ревалидирует по ETag
+  // и получает 304 без тела; тексты отдаются в brotli или gzip.
+  const fileCache = new Map();
+  const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
+  function serveFile(req, res, file) {
+    fs.stat(file, (err, st) => {
+      if (err || !st.isFile()) return json(res, 404, { error: 'not_found' });
+      let c = fileCache.get(file);
+      if (!c || c.mtime !== st.mtimeMs) {
+        const data = fs.readFileSync(file);
+        const ext = path.extname(file);
+        c = {
+          mtime: st.mtimeMs, data,
+          etag: '"' + crypto.createHash('sha1').update(data).digest('base64url').slice(0, 20) + '"',
+          br: COMPRESSIBLE.has(ext) ? zlib.brotliCompressSync(data) : null,
+          gz: COMPRESSIBLE.has(ext) ? zlib.gzipSync(data, { level: 9 }) : null,
+        };
+        fileCache.set(file, c);
+      }
+      const headers = {
         'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
-        'Cache-Control': 'no-cache',
-        ...SECURITY_HEADERS,
-      });
-      res.end(data);
+        'Cache-Control': 'no-cache', ETag: c.etag, Vary: 'Accept-Encoding', ...SECURITY_HEADERS,
+      };
+      if (req.headers['if-none-match'] === c.etag) { res.writeHead(304, headers); return res.end(); }
+      const ae = String(req.headers['accept-encoding'] || '');
+      let body = c.data;
+      if (c.br && /\bbr\b/.test(ae)) { body = c.br; headers['Content-Encoding'] = 'br'; }
+      else if (c.gz && /\bgzip\b/.test(ae)) { body = c.gz; headers['Content-Encoding'] = 'gzip'; }
+      headers['Content-Length'] = body.length;
+      res.writeHead(200, headers);
+      res.end(req.method === 'HEAD' ? undefined : body);
     });
   }
 
@@ -193,10 +217,10 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
 
     if (req.method === 'GET' || req.method === 'HEAD') {
       if (p === '/' || p === '/host' || /^\/host\/[A-Za-z0-9]{6}$/.test(p) || /^\/j\/[A-Za-z0-9]{6}$/.test(p)) {
-        return serveFile(res, path.join(PUBLIC, 'app.html'));
+        return serveFile(req, res, path.join(PUBLIC, 'app.html'));
       }
       const file = path.normalize(path.join(PUBLIC, p));
-      if (file.startsWith(PUBLIC + path.sep) && path.basename(file) !== 'app.html') return serveFile(res, file);
+      if (file.startsWith(PUBLIC + path.sep) && path.basename(file) !== 'app.html') return serveFile(req, res, file);
     }
     return json(res, 404, { error: 'not_found' });
   }
